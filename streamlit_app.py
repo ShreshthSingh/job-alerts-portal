@@ -147,6 +147,11 @@ def do_login_screen():
         "Login with GitHub</a>",
         unsafe_allow_html=True,
     )
+    st.caption(
+        "If clicking that does nothing (some embedded/preview views block "
+        "top-level navigation), copy this URL into a fresh browser tab instead:"
+    )
+    st.code(authorize_url, language=None)
 
 
 def handle_oauth_callback():
