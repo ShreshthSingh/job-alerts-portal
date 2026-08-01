@@ -136,9 +136,12 @@ def do_login_screen():
 
     # Not st.link_button: it opens in a new tab, which starts a brand new
     # Streamlit session with no memory of oauth_state, so the callback's
-    # state check always fails. A plain same-tab link keeps the session.
+    # state check always fails. target="_top" (not "_self") navigates the
+    # whole top-level tab even when the app itself is shown inside an
+    # iframe (e.g. Streamlit Cloud's own dashboard preview) - "_self" would
+    # try to load github.com inside that iframe, which GitHub blocks.
     st.markdown(
-        f'<a href="{authorize_url}" target="_self" '
+        f'<a href="{authorize_url}" target="_top" '
         'style="display:inline-block;padding:0.5em 1em;background:#ff4b4b;'
         'color:white;border-radius:0.5em;text-decoration:none;font-weight:600;">'
         "Login with GitHub</a>",
