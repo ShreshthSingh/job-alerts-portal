@@ -128,11 +128,22 @@ def do_login_screen():
         "session."
     )
 
-    state = pysecrets.token_urlsafe(24)
-    st.session_state["oauth_state"] = state
+    # setdefault, not a plain assignment: this function reruns on every
+    # script execution while logged out, and the state must stay the same
+    # from when the link is rendered until GitHub redirects back with it.
+    state = st.session_state.setdefault("oauth_state", pysecrets.token_urlsafe(24))
     authorize_url = oauth.build_authorize_url(CLIENT_ID, REDIRECT_URI, state)
 
-    st.link_button("Login with GitHub", authorize_url, type="primary")
+    # Not st.link_button: it opens in a new tab, which starts a brand new
+    # Streamlit session with no memory of oauth_state, so the callback's
+    # state check always fails. A plain same-tab link keeps the session.
+    st.markdown(
+        f'<a href="{authorize_url}" target="_self" '
+        'style="display:inline-block;padding:0.5em 1em;background:#ff4b4b;'
+        'color:white;border-radius:0.5em;text-decoration:none;font-weight:600;">'
+        "Login with GitHub</a>",
+        unsafe_allow_html=True,
+    )
 
 
 def handle_oauth_callback():
