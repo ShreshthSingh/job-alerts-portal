@@ -382,6 +382,99 @@ if not st.session_state["portal_config"]:
     st.caption("Nothing added yet - fetch filters for a company above and add it.")
 
 st.divider()
+st.subheader("Test a company's API")
+st.caption(
+    "Paste an API URL, base URL, and a params JSON (same shape as an "
+    "entry's 'params' field above) to check whether Workday actually "
+    "returns jobs for them right now - handy for confirming a fix to "
+    "stale facet IDs works before adding/updating an entry above, or for "
+    "sanity-checking a brand new company."
+)
+
+test_api_url = st.text_input(
+    "API URL",
+    key="test_api_url",
+    placeholder="https://company.wd1.myworkdayjobs.com/wday/cxs/company/site/jobs",
+)
+test_base_url = st.text_input(
+    "Base URL (optional, only used to build the preview links below)",
+    key="test_base_url",
+    placeholder="https://company.wd1.myworkdayjobs.com/en-US/site/job",
+)
+test_params_text = st.text_area(
+    "Params (JSON)",
+    value=json.dumps(
+        {"appliedFacets": {}, "limit": 20, "offset": 0, "searchText": "software engineer"},
+        indent=4,
+    ),
+    height=180,
+    key="test_params_text",
+)
+
+if st.button("Test API"):
+    if not test_api_url:
+        st.error("Enter an API URL first")
+    else:
+        try:
+            test_params = json.loads(test_params_text)
+        except json.JSONDecodeError as exc:
+            st.error(f"Invalid params JSON: {exc}")
+        else:
+            try:
+                resp = requests.post(
+                    test_api_url, json=test_params, headers=WORKDAY_HEADERS, timeout=30
+                )
+            except requests.RequestException as exc:
+                st.error(f"Couldn't reach {test_api_url}: {exc}")
+            else:
+                if resp.status_code == 400:
+                    st.error(
+                        "HTTP 400 - Workday rejected these params (usually means one "
+                        "or more facet IDs are stale or invalid)."
+                    )
+                elif resp.status_code != 200:
+                    st.error(f"HTTP {resp.status_code} from that API URL.")
+                else:
+                    try:
+                        data = resp.json()
+                    except requests.exceptions.JSONDecodeError:
+                        st.error(
+                            "Got a 200 but the response wasn't JSON - possibly a "
+                            "bot-block page or a Workday outage page. Try again "
+                            "shortly."
+                        )
+                    else:
+                        postings = data.get("jobPostings")
+                        if postings is None:
+                            st.warning(
+                                "No 'jobPostings' field in the response - here's the "
+                                "raw JSON so you can see what came back instead:"
+                            )
+                            st.json(data)
+                        elif not postings:
+                            st.warning(
+                                "Request succeeded (so the params themselves are "
+                                "valid), but 0 jobs matched right now."
+                            )
+                        else:
+                            st.success(f"{len(postings)} job(s) returned:")
+                            for job in postings:
+                                title = job.get("title", "(no title)")
+                                posted = job.get("postedOn", "")
+                                link = job.get("externalPath") or job.get("jobPostingUrl") or ""
+                                if test_base_url and link:
+                                    slug = (
+                                        link.split("/job/")[-1]
+                                        if "/job/" in link
+                                        else link.split("/")[-1]
+                                    )
+                                    st.markdown(
+                                        f"- **{title}** - {posted}  \n  {test_base_url}/{slug}"
+                                    )
+                                else:
+                                    st.markdown(f"- **{title}** - {posted}")
+
+st.divider()
 st.subheader("Telegram bot")
 st.caption(
     "Create a free bot via @BotFather on Telegram, then message it once so it "
