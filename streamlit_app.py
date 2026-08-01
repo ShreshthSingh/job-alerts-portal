@@ -347,10 +347,11 @@ st.warning(
     "here, log in, and click Reactivate below - no need to rebuild anything."
 )
 st.caption(
-    "**Deploy** = first time, or you're changing your company list / bot "
-    "(needs the alert list and Telegram fields above filled in). "
-    "**Reactivate** = you already deployed and just want to restart/confirm "
-    "your existing schedule (needs nothing else - just being logged in)."
+    "**Deploy** = commits your current company list (always needed) and, "
+    "only if you filled in the Telegram fields above, updates your bot/chat "
+    "id too - leave them blank to keep whatever's already set from before. "
+    "**Reactivate** = you're not changing anything, just restarting/"
+    "confirming an already-deployed schedule (needs nothing but login)."
 )
 
 deploy_col, reactivate_col = st.columns(2)
@@ -359,8 +360,6 @@ with deploy_col:
     if st.button("Deploy my alerts", type="primary"):
         if not st.session_state["portal_config"]:
             st.error("Add at least one company to your alert list first")
-        elif not (bot_token and chat_id):
-            st.error("Add your Telegram bot token and chat id first")
         else:
             try:
                 with st.spinner("Forking repo..."):
@@ -393,9 +392,20 @@ with deploy_col:
                         sha=sha,
                     )
 
-                with st.spinner("Setting secrets..."):
-                    github_client.put_secret(token, username, TEMPLATE_REPO, "BOT_TOKEN", bot_token)
-                    github_client.put_secret(token, username, TEMPLATE_REPO, "CHAT_ID", chat_id)
+                if bot_token and chat_id:
+                    with st.spinner("Setting secrets..."):
+                        github_client.put_secret(
+                            token, username, TEMPLATE_REPO, "BOT_TOKEN", bot_token
+                        )
+                        github_client.put_secret(
+                            token, username, TEMPLATE_REPO, "CHAT_ID", chat_id
+                        )
+                else:
+                    st.info(
+                        "Telegram fields left blank - leaving your existing bot "
+                        "token/chat id as-is. If you've never deployed before, "
+                        "fill those in first or your alerts won't be able to send."
+                    )
 
                 with st.spinner("Enabling Actions..."):
                     github_client.enable_actions(token, username, TEMPLATE_REPO)
