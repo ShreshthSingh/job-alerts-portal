@@ -7,7 +7,6 @@ this browser session's st.session_state and is gone when the tab closes.
 """
 
 import json
-import secrets as pysecrets
 
 import requests
 import streamlit as st
@@ -128,10 +127,10 @@ def do_login_screen():
         "session."
     )
 
-    # setdefault, not a plain assignment: this function reruns on every
-    # script execution while logged out, and the state must stay the same
-    # from when the link is rendered until GitHub redirects back with it.
-    state = st.session_state.setdefault("oauth_state", pysecrets.token_urlsafe(24))
+    # Signed, self-verifying state (see oauth.make_signed_state) - Streamlit
+    # resets session_state on the full-page reload GitHub's redirect causes,
+    # so there's nothing to remember it against; it has to check itself.
+    state = oauth.make_signed_state(CLIENT_SECRET)
     authorize_url = oauth.build_authorize_url(CLIENT_ID, REDIRECT_URI, state)
 
     # Not st.link_button: it opens in a new tab, which starts a brand new
@@ -158,13 +157,12 @@ def handle_oauth_callback():
     params = st.query_params
     code = params.get("code")
     returned_state = params.get("state")
-    expected_state = st.session_state.get("oauth_state")
 
     if not code:
         return False
 
-    if not expected_state or returned_state != expected_state:
-        st.error("OAuth state mismatch - please try logging in again.")
+    if not oauth.verify_signed_state(CLIENT_SECRET, returned_state):
+        st.error("Login link expired or invalid - please try logging in again.")
         st.query_params.clear()
         return False
 
