@@ -130,6 +130,15 @@ st.session_state.setdefault("gh_token", None)
 st.session_state.setdefault("gh_user", None)
 st.session_state.setdefault("companies", DEFAULT_COMPANIES.copy())
 st.session_state.setdefault("portal_config", [])
+st.session_state.setdefault("config_version", 0)
+
+
+def set_portal_config(new_config: list) -> None:
+    """The single write path for portal_config. Bumping config_version
+    forces the raw-JSON editor (keyed on it) to reset and show this new
+    value, instead of silently keeping stale text a user hasn't looked at."""
+    st.session_state["portal_config"] = new_config
+    st.session_state["config_version"] += 1
 
 
 # -----------------------------
@@ -239,12 +248,12 @@ if not st.session_state.get("loaded_existing_config"):
                 token, username, TEMPLATE_REPO, "config.json", existing_repo["default_branch"]
             )
             if content:
-                st.session_state["portal_config"] = json.loads(content)
+                loaded = json.loads(content)
+                set_portal_config(loaded)
                 st.info(
-                    f"Loaded your existing alert list "
-                    f"({len(st.session_state['portal_config'])} companies) from your "
-                    "fork - it's below. Edit it and hit Deploy to update, or leave it "
-                    "as-is and use Reactivate instead."
+                    f"Loaded your existing alert list ({len(loaded)} companies) from "
+                    "your fork - it's below. Edit it and hit Deploy to update, or "
+                    "leave it as-is and use Reactivate instead."
                 )
     except (github_client.GitHubClientError, requests.RequestException, ValueError):
         pass  # no existing fork/config yet, or a hiccup reading it - fine to start fresh
@@ -324,7 +333,7 @@ if "facets" in st.session_state:
             },
         }
 
-        existing = st.session_state["portal_config"]
+        existing = list(st.session_state["portal_config"])
         replaced = False
         for i, cfg in enumerate(existing):
             if cfg["name"].lower() == new_entry["name"].lower():
@@ -333,14 +342,43 @@ if "facets" in st.session_state:
                 break
         if not replaced:
             existing.append(new_entry)
+        set_portal_config(existing)
 
         st.success(f"{'Updated' if replaced else 'Added'} {company['name']} in your alert list")
 
 st.divider()
 st.subheader("Your alert list")
-if st.session_state["portal_config"]:
-    st.json(st.session_state["portal_config"])
-else:
+st.caption(
+    "This is exactly what gets committed as config.json on Deploy - the "
+    "picker above is a convenience for building it, but you can edit the "
+    "raw JSON directly here too (e.g. to fix a company whose filter IDs "
+    "went stale, remove one, or hand-tweak searchText). Click 'Apply "
+    "edits' before Deploy for changes here to actually take effect."
+)
+
+edited_text = st.text_area(
+    "Alert list (JSON)",
+    value=json.dumps(st.session_state["portal_config"], indent=4),
+    height=350,
+    key=f"config_editor_{st.session_state['config_version']}",
+)
+
+if st.button("Apply edits"):
+    try:
+        parsed = json.loads(edited_text)
+        if not isinstance(parsed, list):
+            raise ValueError("Top-level JSON must be a list of companies")
+        for entry in parsed:
+            if not isinstance(entry, dict) or not entry.get("name") or not entry.get("api_url"):
+                raise ValueError("Every entry needs at least a 'name' and 'api_url'")
+    except (json.JSONDecodeError, ValueError) as exc:
+        st.error(f"Invalid JSON, not applied: {exc}")
+    else:
+        set_portal_config(parsed)
+        st.success(f"Applied - {len(parsed)} companies. Click Deploy below to push this to your fork.")
+        st.rerun()
+
+if not st.session_state["portal_config"]:
     st.caption("Nothing added yet - fetch filters for a company above and add it.")
 
 st.divider()
