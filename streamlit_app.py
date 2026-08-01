@@ -319,6 +319,11 @@ st.caption(
     "can DM you - that gives you the chat id below (e.g. via @userinfobot, or "
     "https://api.telegram.org/bot<token>/getUpdates)."
 )
+st.caption(
+    "Note: nothing on this page is saved between visits (see Privacy below) "
+    "- if you're just checking on alerts you already deployed, skip this and "
+    "use 'Reactivate my alerts' further down instead of re-entering these."
+)
 bot_token = st.text_input("Bot token", type="password", key="bot_token")
 chat_id = st.text_input("Chat id", key="chat_id")
 
@@ -340,6 +345,12 @@ st.warning(
     "Heads up: GitHub auto-disables scheduled Actions on a repo after 60 "
     "days with no activity. If your alerts ever go quiet, just come back "
     "here, log in, and click Reactivate below - no need to rebuild anything."
+)
+st.caption(
+    "**Deploy** = first time, or you're changing your company list / bot "
+    "(needs the alert list and Telegram fields above filled in). "
+    "**Reactivate** = you already deployed and just want to restart/confirm "
+    "your existing schedule (needs nothing else - just being logged in)."
 )
 
 deploy_col, reactivate_col = st.columns(2)
