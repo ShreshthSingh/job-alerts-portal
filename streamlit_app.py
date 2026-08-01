@@ -52,14 +52,37 @@ DEFAULT_COMPANIES = [
 # Workday facet helpers (same logic as the local app.py config tool)
 # -----------------------------
 
+WORKDAY_HEADERS = {
+    "Content-Type": "application/json",
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+}
+
+
 def fetch_facets(api_url: str) -> dict | None:
-    resp = requests.post(
-        api_url, json={}, headers={"Content-Type": "application/json"}, timeout=30
-    )
+    try:
+        resp = requests.post(api_url, json={}, headers=WORKDAY_HEADERS, timeout=30)
+    except requests.RequestException as exc:
+        st.error(f"Couldn't reach {api_url}: {exc}")
+        return None
+
     if resp.status_code != 200:
         st.error(f"API error {resp.status_code} fetching facets")
         return None
-    return resp.json()
+
+    try:
+        return resp.json()
+    except requests.exceptions.JSONDecodeError:
+        st.error(
+            "That company's career site didn't return usable data (it "
+            "may be blocking automated requests). Try a different company, "
+            "or add it manually with the exact filter IDs if you already "
+            "have them."
+        )
+        return None
 
 
 def parse_facets(data: dict) -> dict:
