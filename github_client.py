@@ -91,8 +91,28 @@ def get_file_sha(token: str, owner: str, repo: str, path: str, ref: str) -> str 
     if resp.status_code == 404:
         return None
     if resp.status_code >= 400:
-        raise GitHubClientError(f"GET contents failed ({resp.status_code}): {resp.text[:300]}")
+        raise GitHubClientError(
+            f"GET contents failed ({resp.status_code}): {resp.text[:300]}",
+            status_code=resp.status_code,
+        )
     return resp.json()["sha"]
+
+
+def get_file_content(token: str, owner: str, repo: str, path: str, ref: str) -> str | None:
+    resp = requests.get(
+        f"{API_BASE}/repos/{owner}/{repo}/contents/{path}",
+        headers=_headers(token),
+        params={"ref": ref},
+        timeout=20,
+    )
+    if resp.status_code == 404:
+        return None
+    if resp.status_code >= 400:
+        raise GitHubClientError(
+            f"GET contents failed ({resp.status_code}): {resp.text[:300]}",
+            status_code=resp.status_code,
+        )
+    return base64.b64decode(resp.json()["content"]).decode("utf-8")
 
 
 def put_file(

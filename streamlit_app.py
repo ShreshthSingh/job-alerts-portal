@@ -218,6 +218,37 @@ if not st.session_state["gh_token"]:
 token = st.session_state["gh_token"]
 username = st.session_state["gh_user"]["login"]
 
+# Load whatever's already deployed on this user's fork into the session,
+# once per session, before they start editing. Without this, a fresh
+# session (every revisit - nothing persists) starts with an empty alert
+# list, and Deploy's config.json write would blindly overwrite the fork
+# with just that empty/partial list, silently dropping everything already
+# deployed.
+if not st.session_state.get("loaded_existing_config"):
+    st.session_state["loaded_existing_config"] = True
+    try:
+        existing_repo = github_client.get_repo(token, username, TEMPLATE_REPO)
+        is_our_fork = (
+            existing_repo is not None
+            and existing_repo.get("fork")
+            and existing_repo.get("parent", {}).get("full_name")
+            == f"{TEMPLATE_OWNER}/{TEMPLATE_REPO}"
+        )
+        if is_our_fork:
+            content = github_client.get_file_content(
+                token, username, TEMPLATE_REPO, "config.json", existing_repo["default_branch"]
+            )
+            if content:
+                st.session_state["portal_config"] = json.loads(content)
+                st.info(
+                    f"Loaded your existing alert list "
+                    f"({len(st.session_state['portal_config'])} companies) from your "
+                    "fork - it's below. Edit it and hit Deploy to update, or leave it "
+                    "as-is and use Reactivate instead."
+                )
+    except (github_client.GitHubClientError, requests.RequestException, ValueError):
+        pass  # no existing fork/config yet, or a hiccup reading it - fine to start fresh
+
 with st.sidebar:
     st.write(f"Logged in as **{username}**")
     if st.button("Log out"):
