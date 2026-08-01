@@ -1,0 +1,11 @@
+# Python cache files
+__pycache__/
+*.pyc
+
+# Local Streamlit secrets - never commit real OAuth credentials.
+# Streamlit resolves secrets.toml relative to both $CWD and the running
+# script's directory, so guard both spots.
+**/.streamlit/secrets.toml
+
+# OS
+.DS_Store
