@@ -14,7 +14,19 @@ import streamlit as st
 import github_client
 import oauth
 
-st.set_page_config("Job Alerts - Self Serve", layout="wide")
+st.set_page_config("Job Alerts - Self Serve", page_icon="🔔", layout="wide")
+
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+    html, body, [class*="css"], .stApp, .stApp * {
+        font-family: 'JetBrains Mono', monospace !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 TEMPLATE_OWNER = st.secrets["TEMPLATE_REPO_OWNER"]
 TEMPLATE_REPO = st.secrets["TEMPLATE_REPO_NAME"]
