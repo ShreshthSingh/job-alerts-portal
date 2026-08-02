@@ -255,6 +255,7 @@ if not st.session_state.get("loaded_existing_config"):
             and existing_repo.get("parent", {}).get("full_name")
             == f"{TEMPLATE_OWNER}/{TEMPLATE_REPO}"
         )
+        st.session_state["has_fork"] = is_our_fork
         if is_our_fork:
             content = github_client.get_file_content(
                 token, username, TEMPLATE_REPO, "config.json", existing_repo["default_branch"]
@@ -271,7 +272,21 @@ if not st.session_state.get("loaded_existing_config"):
         pass  # no existing fork/config yet, or a hiccup reading it - fine to start fresh
 
 with st.sidebar:
-    st.write(f"Logged in as **{username}**")
+    avatar_url = st.session_state["gh_user"].get("avatar_url")
+    if avatar_url:
+        st.markdown(
+            f"""
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:0.5em;">
+                <img src="{avatar_url}" width="42" height="42"
+                     style="border-radius:50%;border:2px solid #00FF9C;
+                            box-shadow:0 0 6px rgba(0,255,156,0.5);" />
+                <span>Logged in as<br/><b>{username}</b></span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        st.write(f"Logged in as **{username}**")
     if st.button("Log out"):
         st.session_state["gh_token"] = None
         st.session_state["gh_user"] = None
@@ -296,325 +311,350 @@ with st.sidebar:
             )
             st.sidebar.success("Added")
 
-st.title("Build your alert list")
+st.title("🔔 Job Alerts - Self Serve")
 
-names = [c["name"] for c in st.session_state["companies"]]
-selected_name = st.selectbox("Company", names)
-company = next(c for c in st.session_state["companies"] if c["name"] == selected_name)
+metric_col1, metric_col2, metric_col3 = st.columns(3)
+with metric_col1:
+    st.metric("Companies in list", len(st.session_state["portal_config"]))
+with metric_col2:
+    st.metric(
+        "Telegram",
+        "✅ Tested" if st.session_state.get("telegram_tested") else "⚠️ Not tested",
+    )
+with metric_col3:
+    st.metric(
+        "Deploy status",
+        "✅ Live" if st.session_state.get("has_fork") else "⚠️ Not deployed",
+    )
 
-if st.button("Fetch filters"):
-    with st.spinner("Loading..."):
-        data = fetch_facets(company["api_url"])
-    if data:
-        st.session_state["facets"] = parse_facets(data)
-        st.success("Loaded")
+st.divider()
 
-if "facets" in st.session_state:
-    facets = st.session_state["facets"]
-    st.divider()
-    st.subheader("Filters")
+tab_build, tab_test, tab_telegram, tab_deploy = st.tabs(
+    ["📋 Build List", "🧪 Test API", "📲 Telegram", "🚀 Deploy"]
+)
 
-    selected_facets = {}
-    col1, col2 = st.columns(2)
+with tab_build:
+    names = [c["name"] for c in st.session_state["companies"]]
+    selected_name = st.selectbox("Company", names)
+    company = next(c for c in st.session_state["companies"] if c["name"] == selected_name)
 
-    with col1:
-        for key in ["jobFamilyGroup", "jobFamilies", "workerSubType"]:
-            if key in facets:
-                sel = st.multiselect(key, facets[key].keys(), key=f"f_{key}")
+    if st.button("Fetch filters"):
+        with st.spinner("Loading..."):
+            data = fetch_facets(company["api_url"])
+        if data:
+            st.session_state["facets"] = parse_facets(data)
+            st.success("Loaded")
+
+    if "facets" in st.session_state:
+        facets = st.session_state["facets"]
+        st.divider()
+        st.subheader("Filters")
+
+        selected_facets = {}
+        col1, col2 = st.columns(2)
+
+        with col1:
+            for key in ["jobFamilyGroup", "jobFamilies", "workerSubType"]:
+                if key in facets:
+                    sel = st.multiselect(key, facets[key].keys(), key=f"f_{key}")
+                    if sel:
+                        selected_facets[key] = [facets[key][s] for s in sel]
+
+        with col2:
+            if "locations" in facets:
+                sel = st.multiselect("locations", facets["locations"].keys(), key="f_locations")
                 if sel:
-                    selected_facets[key] = [facets[key][s] for s in sel]
+                    selected_facets["locations"] = [facets["locations"][s] for s in sel]
 
-    with col2:
-        if "locations" in facets:
-            sel = st.multiselect("locations", facets["locations"].keys(), key="f_locations")
-            if sel:
-                selected_facets["locations"] = [facets["locations"][s] for s in sel]
+        search = st.text_input("Search text", "software engineer")
 
-    search = st.text_input("Search text", "software engineer")
+        if st.button("Add to my alert list"):
+            new_entry = {
+                "name": company["name"],
+                "api_url": company["api_url"],
+                "base_url": company["base_url"],
+                "params": {
+                    "appliedFacets": selected_facets,
+                    "limit": 20,
+                    "offset": 0,
+                    "searchText": search.replace(" ", "+"),
+                },
+            }
 
-    if st.button("Add to my alert list"):
-        new_entry = {
-            "name": company["name"],
-            "api_url": company["api_url"],
-            "base_url": company["base_url"],
-            "params": {
-                "appliedFacets": selected_facets,
-                "limit": 20,
-                "offset": 0,
-                "searchText": search.replace(" ", "+"),
-            },
-        }
+            existing = list(st.session_state["portal_config"])
+            replaced = False
+            for i, cfg in enumerate(existing):
+                if cfg["name"].lower() == new_entry["name"].lower():
+                    existing[i] = new_entry
+                    replaced = True
+                    break
+            if not replaced:
+                existing.append(new_entry)
+            set_portal_config(existing)
 
-        existing = list(st.session_state["portal_config"])
-        replaced = False
-        for i, cfg in enumerate(existing):
-            if cfg["name"].lower() == new_entry["name"].lower():
-                existing[i] = new_entry
-                replaced = True
-                break
-        if not replaced:
-            existing.append(new_entry)
-        set_portal_config(existing)
+            st.success(f"{'Updated' if replaced else 'Added'} {company['name']} in your alert list")
 
-        st.success(f"{'Updated' if replaced else 'Added'} {company['name']} in your alert list")
+    st.divider()
+    st.subheader("Your alert list")
+    st.caption(
+        "This is exactly what gets committed as config.json on Deploy - the "
+        "picker above is a convenience for building it, but you can edit the "
+        "raw JSON directly here too (e.g. to fix a company whose filter IDs "
+        "went stale, remove one, or hand-tweak searchText). Click 'Apply "
+        "edits' before Deploy for changes here to actually take effect."
+    )
 
-st.divider()
-st.subheader("Your alert list")
-st.caption(
-    "This is exactly what gets committed as config.json on Deploy - the "
-    "picker above is a convenience for building it, but you can edit the "
-    "raw JSON directly here too (e.g. to fix a company whose filter IDs "
-    "went stale, remove one, or hand-tweak searchText). Click 'Apply "
-    "edits' before Deploy for changes here to actually take effect."
-)
+    edited_text = st.text_area(
+        "Alert list (JSON)",
+        value=json.dumps(st.session_state["portal_config"], indent=4),
+        height=350,
+        key=f"config_editor_{st.session_state['config_version']}",
+    )
 
-edited_text = st.text_area(
-    "Alert list (JSON)",
-    value=json.dumps(st.session_state["portal_config"], indent=4),
-    height=350,
-    key=f"config_editor_{st.session_state['config_version']}",
-)
-
-if st.button("Apply edits"):
-    try:
-        parsed = json.loads(edited_text)
-        if not isinstance(parsed, list):
-            raise ValueError("Top-level JSON must be a list of companies")
-        for entry in parsed:
-            if not isinstance(entry, dict) or not entry.get("name") or not entry.get("api_url"):
-                raise ValueError("Every entry needs at least a 'name' and 'api_url'")
-    except (json.JSONDecodeError, ValueError) as exc:
-        st.error(f"Invalid JSON, not applied: {exc}")
-    else:
-        set_portal_config(parsed)
-        st.success(f"Applied - {len(parsed)} companies. Click Deploy below to push this to your fork.")
-        st.rerun()
-
-if not st.session_state["portal_config"]:
-    st.caption("Nothing added yet - fetch filters for a company above and add it.")
-
-st.divider()
-st.subheader("Test a company's API")
-st.caption(
-    "Paste an API URL, base URL, and a params JSON (same shape as an "
-    "entry's 'params' field above) to check whether Workday actually "
-    "returns jobs for them right now - handy for confirming a fix to "
-    "stale facet IDs works before adding/updating an entry above, or for "
-    "sanity-checking a brand new company."
-)
-
-test_api_url = st.text_input(
-    "API URL",
-    key="test_api_url",
-    placeholder="https://company.wd1.myworkdayjobs.com/wday/cxs/company/site/jobs",
-)
-test_base_url = st.text_input(
-    "Base URL (optional, only used to build the preview links below)",
-    key="test_base_url",
-    placeholder="https://company.wd1.myworkdayjobs.com/en-US/site/job",
-)
-test_params_text = st.text_area(
-    "Params (JSON)",
-    value=json.dumps(
-        {"appliedFacets": {}, "limit": 20, "offset": 0, "searchText": "software engineer"},
-        indent=4,
-    ),
-    height=180,
-    key="test_params_text",
-)
-
-if st.button("Test API"):
-    if not test_api_url:
-        st.error("Enter an API URL first")
-    else:
+    if st.button("Apply edits"):
         try:
-            test_params = json.loads(test_params_text)
-        except json.JSONDecodeError as exc:
-            st.error(f"Invalid params JSON: {exc}")
+            parsed = json.loads(edited_text)
+            if not isinstance(parsed, list):
+                raise ValueError("Top-level JSON must be a list of companies")
+            for entry in parsed:
+                if not isinstance(entry, dict) or not entry.get("name") or not entry.get("api_url"):
+                    raise ValueError("Every entry needs at least a 'name' and 'api_url'")
+        except (json.JSONDecodeError, ValueError) as exc:
+            st.error(f"Invalid JSON, not applied: {exc}")
+        else:
+            set_portal_config(parsed)
+            st.success(f"Applied - {len(parsed)} companies. Click Deploy to push this to your fork.")
+            st.rerun()
+
+    if not st.session_state["portal_config"]:
+        st.caption("Nothing added yet - fetch filters for a company above and add it.")
+
+with tab_test:
+    st.subheader("Test a company's API")
+    st.caption(
+        "Paste an API URL, base URL, and a params JSON (same shape as an "
+        "entry's 'params' field in Build List) to check whether Workday "
+        "actually returns jobs for them right now - handy for confirming a "
+        "fix to stale facet IDs works before adding/updating an entry, or "
+        "for sanity-checking a brand new company."
+    )
+
+    test_api_url = st.text_input(
+        "API URL",
+        key="test_api_url",
+        placeholder="https://company.wd1.myworkdayjobs.com/wday/cxs/company/site/jobs",
+    )
+    test_base_url = st.text_input(
+        "Base URL (optional, only used to build the preview links below)",
+        key="test_base_url",
+        placeholder="https://company.wd1.myworkdayjobs.com/en-US/site/job",
+    )
+    test_params_text = st.text_area(
+        "Params (JSON)",
+        value=json.dumps(
+            {"appliedFacets": {}, "limit": 20, "offset": 0, "searchText": "software engineer"},
+            indent=4,
+        ),
+        height=180,
+        key="test_params_text",
+    )
+
+    if st.button("Test API"):
+        if not test_api_url:
+            st.error("Enter an API URL first")
         else:
             try:
-                resp = requests.post(
-                    test_api_url, json=test_params, headers=WORKDAY_HEADERS, timeout=30
-                )
-            except requests.RequestException as exc:
-                st.error(f"Couldn't reach {test_api_url}: {exc}")
+                test_params = json.loads(test_params_text)
+            except json.JSONDecodeError as exc:
+                st.error(f"Invalid params JSON: {exc}")
             else:
-                if resp.status_code == 400:
-                    st.error(
-                        "HTTP 400 - Workday rejected these params (usually means one "
-                        "or more facet IDs are stale or invalid)."
+                try:
+                    resp = requests.post(
+                        test_api_url, json=test_params, headers=WORKDAY_HEADERS, timeout=30
                     )
-                elif resp.status_code != 200:
-                    st.error(f"HTTP {resp.status_code} from that API URL.")
+                except requests.RequestException as exc:
+                    st.error(f"Couldn't reach {test_api_url}: {exc}")
                 else:
-                    try:
-                        data = resp.json()
-                    except requests.exceptions.JSONDecodeError:
+                    if resp.status_code == 400:
                         st.error(
-                            "Got a 200 but the response wasn't JSON - possibly a "
-                            "bot-block page or a Workday outage page. Try again "
-                            "shortly."
+                            "HTTP 400 - Workday rejected these params (usually means one "
+                            "or more facet IDs are stale or invalid)."
                         )
+                    elif resp.status_code != 200:
+                        st.error(f"HTTP {resp.status_code} from that API URL.")
                     else:
-                        postings = data.get("jobPostings")
-                        if postings is None:
-                            st.warning(
-                                "No 'jobPostings' field in the response - here's the "
-                                "raw JSON so you can see what came back instead:"
-                            )
-                            st.json(data)
-                        elif not postings:
-                            st.warning(
-                                "Request succeeded (so the params themselves are "
-                                "valid), but 0 jobs matched right now."
+                        try:
+                            data = resp.json()
+                        except requests.exceptions.JSONDecodeError:
+                            st.error(
+                                "Got a 200 but the response wasn't JSON - possibly a "
+                                "bot-block page or a Workday outage page. Try again "
+                                "shortly."
                             )
                         else:
-                            st.success(f"{len(postings)} job(s) returned:")
-                            for job in postings:
-                                title = job.get("title", "(no title)")
-                                posted = job.get("postedOn", "")
-                                link = job.get("externalPath") or job.get("jobPostingUrl") or ""
-                                if test_base_url and link:
-                                    slug = (
-                                        link.split("/job/")[-1]
-                                        if "/job/" in link
-                                        else link.split("/")[-1]
-                                    )
-                                    st.markdown(
-                                        f"- **{title}** - {posted}  \n  {test_base_url}/{slug}"
-                                    )
-                                else:
-                                    st.markdown(f"- **{title}** - {posted}")
+                            postings = data.get("jobPostings")
+                            if postings is None:
+                                st.warning(
+                                    "No 'jobPostings' field in the response - here's the "
+                                    "raw JSON so you can see what came back instead:"
+                                )
+                                st.json(data)
+                            elif not postings:
+                                st.warning(
+                                    "Request succeeded (so the params themselves are "
+                                    "valid), but 0 jobs matched right now."
+                                )
+                            else:
+                                st.success(f"{len(postings)} job(s) returned:")
+                                for job in postings:
+                                    title = job.get("title", "(no title)")
+                                    posted = job.get("postedOn", "")
+                                    link = job.get("externalPath") or job.get("jobPostingUrl") or ""
+                                    if test_base_url and link:
+                                        slug = (
+                                            link.split("/job/")[-1]
+                                            if "/job/" in link
+                                            else link.split("/")[-1]
+                                        )
+                                        st.markdown(
+                                            f"- **{title}** - {posted}  \n  {test_base_url}/{slug}"
+                                        )
+                                    else:
+                                        st.markdown(f"- **{title}** - {posted}")
 
-st.divider()
-st.subheader("Telegram bot")
-st.caption(
-    "Create a free bot via @BotFather on Telegram, then message it once so it "
-    "can DM you - that gives you the chat id below (e.g. via @userinfobot, or "
-    "https://api.telegram.org/bot<token>/getUpdates)."
-)
-st.caption(
-    "Note: nothing on this page is saved between visits (see Privacy below) "
-    "- if you're just checking on alerts you already deployed, skip this and "
-    "use 'Reactivate my alerts' further down instead of re-entering these."
-)
-bot_token = st.text_input("Bot token", type="password", key="bot_token")
-chat_id = st.text_input("Chat id", key="chat_id")
+with tab_telegram:
+    st.subheader("Telegram bot")
+    st.caption(
+        "Create a free bot via @BotFather on Telegram, then message it once so it "
+        "can DM you - that gives you the chat id below (e.g. via @userinfobot, or "
+        "https://api.telegram.org/bot<token>/getUpdates)."
+    )
+    st.caption(
+        "Note: nothing on this page is saved between visits (see Privacy below) "
+        "- if you're just checking on alerts you already deployed, skip this and "
+        "use 'Reactivate my alerts' in the Deploy tab instead of re-entering these."
+    )
+    bot_token = st.text_input("Bot token", type="password", key="bot_token")
+    chat_id = st.text_input("Chat id", key="chat_id")
 
-if st.button("Send test message"):
-    if not (bot_token and chat_id):
-        st.error("Enter both bot token and chat id first")
-    else:
-        ok, message = send_test_telegram(bot_token, chat_id)
-        (st.success if ok else st.error)(message)
-
-st.divider()
-st.subheader("Deploy")
-st.caption(
-    "This forks the scraper into your GitHub account, commits your alert "
-    "list, sets your bot token/chat id as encrypted secrets on your fork, "
-    "and turns on its GitHub Actions schedule - all under your own account."
-)
-st.warning(
-    "Heads up: GitHub auto-disables scheduled Actions on a repo after 60 "
-    "days with no activity. If your alerts ever go quiet, just come back "
-    "here, log in, and click Reactivate below - no need to rebuild anything."
-)
-st.caption(
-    "**Deploy** = commits your current company list (always needed) and, "
-    "only if you filled in the Telegram fields above, updates your bot/chat "
-    "id too - leave them blank to keep whatever's already set from before. "
-    "**Reactivate** = you're not changing anything, just restarting/"
-    "confirming an already-deployed schedule (needs nothing but login)."
-)
-
-deploy_col, reactivate_col = st.columns(2)
-
-with deploy_col:
-    if st.button("Deploy my alerts", type="primary"):
-        if not st.session_state["portal_config"]:
-            st.error("Add at least one company to your alert list first")
+    if st.button("Send test message"):
+        if not (bot_token and chat_id):
+            st.error("Enter both bot token and chat id first")
         else:
-            try:
-                with st.spinner("Forking repo..."):
-                    try:
-                        github_client.fork_repo(token, TEMPLATE_OWNER, TEMPLATE_REPO)
-                        repo_info = github_client.wait_for_fork(token, username, TEMPLATE_REPO)
-                    except github_client.GitHubClientError as exc:
-                        if exc.status_code in (403, 404):
-                            st.error(
-                                "You don't have access to this yet - it's invite-only. "
-                                "Ask the admin to add you as a collaborator on the "
-                                "source repo, then come back and try again."
-                            )
-                            st.stop()
-                        raise
-                default_branch = repo_info["default_branch"]
+            ok, message = send_test_telegram(bot_token, chat_id)
+            st.session_state["telegram_tested"] = ok
+            (st.success if ok else st.error)(message)
 
-                with st.spinner("Committing your config..."):
-                    sha = github_client.get_file_sha(
-                        token, username, TEMPLATE_REPO, "config.json", default_branch
-                    )
-                    github_client.put_file(
-                        token,
-                        username,
-                        TEMPLATE_REPO,
-                        "config.json",
-                        json.dumps(st.session_state["portal_config"], indent=4),
-                        "Update job alert config via self-serve portal",
-                        default_branch,
-                        sha=sha,
-                    )
+with tab_deploy:
+    st.subheader("Deploy")
+    st.caption(
+        "This forks the scraper into your GitHub account, commits your alert "
+        "list, sets your bot token/chat id as encrypted secrets on your fork, "
+        "and turns on its GitHub Actions schedule - all under your own account."
+    )
+    st.warning(
+        "Heads up: GitHub auto-disables scheduled Actions on a repo after 60 "
+        "days with no activity. If your alerts ever go quiet, just come back "
+        "here, log in, and click Reactivate below - no need to rebuild anything."
+    )
+    st.caption(
+        "**Deploy** = commits your current company list (always needed) and, "
+        "only if you filled in the Telegram fields in the Telegram tab, updates "
+        "your bot/chat id too - leave them blank to keep whatever's already set "
+        "from before. **Reactivate** = you're not changing anything, just "
+        "restarting/confirming an already-deployed schedule (needs nothing but "
+        "login)."
+    )
 
-                if bot_token and chat_id:
-                    with st.spinner("Setting secrets..."):
-                        github_client.put_secret(
-                            token, username, TEMPLATE_REPO, "BOT_TOKEN", bot_token
-                        )
-                        github_client.put_secret(
-                            token, username, TEMPLATE_REPO, "CHAT_ID", chat_id
-                        )
-                else:
-                    st.info(
-                        "Telegram fields left blank - leaving your existing bot "
-                        "token/chat id as-is. If you've never deployed before, "
-                        "fill those in first or your alerts won't be able to send."
-                    )
+    deploy_col, reactivate_col = st.columns(2)
 
-                with st.spinner("Enabling Actions..."):
-                    github_client.enable_actions(token, username, TEMPLATE_REPO)
-                    workflow_id = github_client.get_workflow_id(
-                        token, username, TEMPLATE_REPO, WORKFLOW_PATH
-                    )
-                    github_client.enable_workflow(token, username, TEMPLATE_REPO, workflow_id)
-                    github_client.dispatch_workflow(
-                        token, username, TEMPLATE_REPO, workflow_id, default_branch
-                    )
-
-                repo_url = f"https://github.com/{username}/{TEMPLATE_REPO}"
-                st.success("Deployed! A run just started - check Telegram in a minute.")
-                st.markdown(f"[Your repo]({repo_url}) · [Actions tab]({repo_url}/actions)")
-
-            except (github_client.GitHubClientError, requests.RequestException) as exc:
-                st.error(f"Deploy failed: {exc}")
-
-with reactivate_col:
-    if st.button("Reactivate my alerts"):
-        try:
-            with st.spinner("Reactivating..."):
-                repo_info = github_client.get_repo(token, username, TEMPLATE_REPO)
-                if repo_info is None:
-                    st.error("No fork found yet - use Deploy first.")
-                else:
+    with deploy_col:
+        if st.button("Deploy my alerts", type="primary"):
+            if not st.session_state["portal_config"]:
+                st.error("Add at least one company to your alert list first")
+            else:
+                try:
+                    with st.spinner("Forking repo..."):
+                        try:
+                            github_client.fork_repo(token, TEMPLATE_OWNER, TEMPLATE_REPO)
+                            repo_info = github_client.wait_for_fork(token, username, TEMPLATE_REPO)
+                        except github_client.GitHubClientError as exc:
+                            if exc.status_code in (403, 404):
+                                st.error(
+                                    "You don't have access to this yet - it's invite-only. "
+                                    "Ask the admin to add you as a collaborator on the "
+                                    "source repo, then come back and try again."
+                                )
+                                st.stop()
+                            raise
                     default_branch = repo_info["default_branch"]
-                    github_client.enable_actions(token, username, TEMPLATE_REPO)
-                    workflow_id = github_client.get_workflow_id(
-                        token, username, TEMPLATE_REPO, WORKFLOW_PATH
-                    )
-                    github_client.enable_workflow(token, username, TEMPLATE_REPO, workflow_id)
-                    github_client.dispatch_workflow(
-                        token, username, TEMPLATE_REPO, workflow_id, default_branch
-                    )
-                    st.success("Reactivated! A run just started - check Telegram in a minute.")
-        except (github_client.GitHubClientError, requests.RequestException) as exc:
-            st.error(f"Reactivate failed: {exc}")
+
+                    with st.spinner("Committing your config..."):
+                        sha = github_client.get_file_sha(
+                            token, username, TEMPLATE_REPO, "config.json", default_branch
+                        )
+                        github_client.put_file(
+                            token,
+                            username,
+                            TEMPLATE_REPO,
+                            "config.json",
+                            json.dumps(st.session_state["portal_config"], indent=4),
+                            "Update job alert config via self-serve portal",
+                            default_branch,
+                            sha=sha,
+                        )
+
+                    if bot_token and chat_id:
+                        with st.spinner("Setting secrets..."):
+                            github_client.put_secret(
+                                token, username, TEMPLATE_REPO, "BOT_TOKEN", bot_token
+                            )
+                            github_client.put_secret(
+                                token, username, TEMPLATE_REPO, "CHAT_ID", chat_id
+                            )
+                    else:
+                        st.info(
+                            "Telegram fields left blank - leaving your existing bot "
+                            "token/chat id as-is. If you've never deployed before, "
+                            "fill those in first or your alerts won't be able to send."
+                        )
+
+                    with st.spinner("Enabling Actions..."):
+                        github_client.enable_actions(token, username, TEMPLATE_REPO)
+                        workflow_id = github_client.get_workflow_id(
+                            token, username, TEMPLATE_REPO, WORKFLOW_PATH
+                        )
+                        github_client.enable_workflow(token, username, TEMPLATE_REPO, workflow_id)
+                        github_client.dispatch_workflow(
+                            token, username, TEMPLATE_REPO, workflow_id, default_branch
+                        )
+
+                    st.session_state["has_fork"] = True
+                    repo_url = f"https://github.com/{username}/{TEMPLATE_REPO}"
+                    st.success("Deployed! A run just started - check Telegram in a minute.")
+                    st.markdown(f"[Your repo]({repo_url}) · [Actions tab]({repo_url}/actions)")
+
+                except (github_client.GitHubClientError, requests.RequestException) as exc:
+                    st.error(f"Deploy failed: {exc}")
+
+    with reactivate_col:
+        if st.button("Reactivate my alerts"):
+            try:
+                with st.spinner("Reactivating..."):
+                    repo_info = github_client.get_repo(token, username, TEMPLATE_REPO)
+                    if repo_info is None:
+                        st.error("No fork found yet - use Deploy first.")
+                    else:
+                        default_branch = repo_info["default_branch"]
+                        github_client.enable_actions(token, username, TEMPLATE_REPO)
+                        workflow_id = github_client.get_workflow_id(
+                            token, username, TEMPLATE_REPO, WORKFLOW_PATH
+                        )
+                        github_client.enable_workflow(token, username, TEMPLATE_REPO, workflow_id)
+                        github_client.dispatch_workflow(
+                            token, username, TEMPLATE_REPO, workflow_id, default_branch
+                        )
+                        st.session_state["has_fork"] = True
+                        st.success("Reactivated! A run just started - check Telegram in a minute.")
+            except (github_client.GitHubClientError, requests.RequestException) as exc:
+                st.error(f"Reactivate failed: {exc}")
