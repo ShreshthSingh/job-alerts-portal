@@ -116,6 +116,100 @@ def parse_facets(data: dict) -> dict:
     return facet_map
 
 
+BROWSER_HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+
+def fetch_greenhouse_jobs(
+    company_slug: str, department: str = "", office: str = "", search_text: str = ""
+) -> tuple[list | None, str | None]:
+    """Returns (jobs, error). jobs is a list of {title, link, updated_at}
+    dicts already filtered client-side - Greenhouse has no facet IDs, just
+    plain-text department/office names embedded on each job."""
+    try:
+        resp = requests.get(
+            f"https://boards-api.greenhouse.io/v1/boards/{company_slug}/jobs",
+            params={"content": "true"},
+            headers=BROWSER_HEADERS,
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        return None, f"Couldn't reach Greenhouse: {exc}"
+
+    if resp.status_code == 404:
+        return [], None
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code} from Greenhouse"
+
+    try:
+        jobs_raw = resp.json().get("jobs", [])
+    except requests.exceptions.JSONDecodeError:
+        return None, "Got a 200 but the response wasn't JSON"
+
+    department, office, search_text = department.strip().lower(), office.strip().lower(), search_text.strip().lower()
+
+    results = []
+    for job in jobs_raw:
+        if department and not any(
+            department in d.get("name", "").lower() for d in job.get("departments", [])
+        ):
+            continue
+        if office and not any(
+            office in o.get("name", "").lower() for o in job.get("offices", [])
+        ):
+            continue
+        title = job.get("title", "")
+        if search_text and search_text not in title.lower():
+            continue
+        results.append(
+            {"title": title, "link": job.get("absolute_url"), "updated_at": job.get("updated_at", "")}
+        )
+
+    return results, None
+
+
+def fetch_lever_jobs(
+    company_slug: str, team: str = "", location: str = "", search_text: str = ""
+) -> tuple[list | None, str | None]:
+    """Returns (jobs, error), same shape as fetch_greenhouse_jobs."""
+    try:
+        resp = requests.get(
+            f"https://api.lever.co/v0/postings/{company_slug}",
+            params={"mode": "json"},
+            headers=BROWSER_HEADERS,
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        return None, f"Couldn't reach Lever: {exc}"
+
+    if resp.status_code == 404:
+        return [], None
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code} from Lever"
+
+    try:
+        postings = resp.json()
+    except requests.exceptions.JSONDecodeError:
+        return None, "Got a 200 but the response wasn't JSON"
+
+    team, location, search_text = team.strip().lower(), location.strip().lower(), search_text.strip().lower()
+
+    results = []
+    for job in postings:
+        categories = job.get("categories", {}) or {}
+        if team and team not in (categories.get("team") or "").lower():
+            continue
+        if location and location not in (categories.get("location") or "").lower():
+            continue
+        title = job.get("text", "")
+        if search_text and search_text not in title.lower():
+            continue
+        results.append(
+            {"title": title, "link": job.get("hostedUrl"), "updated_at": job.get("createdAt", "")}
+        )
+
+    return results, None
+
+
 def send_test_telegram(bot_token: str, chat_id: str) -> tuple[bool, str]:
     try:
         resp = requests.post(
@@ -151,6 +245,22 @@ def set_portal_config(new_config: list) -> None:
     value, instead of silently keeping stale text a user hasn't looked at."""
     st.session_state["portal_config"] = new_config
     st.session_state["config_version"] += 1
+
+
+def upsert_company(new_entry: dict) -> bool:
+    """Add new_entry to portal_config, or replace the existing entry with
+    the same name (case-insensitive). Returns True if it replaced one."""
+    existing = list(st.session_state["portal_config"])
+    replaced = False
+    for i, cfg in enumerate(existing):
+        if cfg["name"].lower() == new_entry["name"].lower():
+            existing[i] = new_entry
+            replaced = True
+            break
+    if not replaced:
+        existing.append(new_entry)
+    set_portal_config(existing)
+    return replaced
 
 
 # -----------------------------
@@ -334,65 +444,126 @@ tab_build, tab_test, tab_telegram, tab_deploy = st.tabs(
 )
 
 with tab_build:
-    names = [c["name"] for c in st.session_state["companies"]]
-    selected_name = st.selectbox("Company", names)
-    company = next(c for c in st.session_state["companies"] if c["name"] == selected_name)
+    platform = st.selectbox("Platform", ["Workday", "Greenhouse", "Lever"], key="platform_select")
 
-    if st.button("Fetch filters"):
-        with st.spinner("Loading..."):
-            data = fetch_facets(company["api_url"])
-        if data:
-            st.session_state["facets"] = parse_facets(data)
-            st.success("Loaded")
+    if platform == "Workday":
+        names = [c["name"] for c in st.session_state["companies"]]
+        selected_name = st.selectbox("Company", names)
+        company = next(c for c in st.session_state["companies"] if c["name"] == selected_name)
 
-    if "facets" in st.session_state:
-        facets = st.session_state["facets"]
-        st.divider()
-        st.subheader("Filters")
+        if st.button("Fetch filters"):
+            with st.spinner("Loading..."):
+                data = fetch_facets(company["api_url"])
+            if data:
+                st.session_state["facets"] = parse_facets(data)
+                st.success("Loaded")
 
-        selected_facets = {}
-        col1, col2 = st.columns(2)
+        if "facets" in st.session_state:
+            facets = st.session_state["facets"]
+            st.divider()
+            st.subheader("Filters")
 
-        with col1:
-            for key in ["jobFamilyGroup", "jobFamilies", "workerSubType"]:
-                if key in facets:
-                    sel = st.multiselect(key, facets[key].keys(), key=f"f_{key}")
+            selected_facets = {}
+            col1, col2 = st.columns(2)
+
+            with col1:
+                for key in ["jobFamilyGroup", "jobFamilies", "workerSubType"]:
+                    if key in facets:
+                        sel = st.multiselect(key, facets[key].keys(), key=f"f_{key}")
+                        if sel:
+                            selected_facets[key] = [facets[key][s] for s in sel]
+
+            with col2:
+                if "locations" in facets:
+                    sel = st.multiselect("locations", facets["locations"].keys(), key="f_locations")
                     if sel:
-                        selected_facets[key] = [facets[key][s] for s in sel]
+                        selected_facets["locations"] = [facets["locations"][s] for s in sel]
 
-        with col2:
-            if "locations" in facets:
-                sel = st.multiselect("locations", facets["locations"].keys(), key="f_locations")
-                if sel:
-                    selected_facets["locations"] = [facets["locations"][s] for s in sel]
+            search = st.text_input("Search text", "software engineer")
 
-        search = st.text_input("Search text", "software engineer")
+            if st.button("Add to my alert list"):
+                new_entry = {
+                    "name": company["name"],
+                    "api_url": company["api_url"],
+                    "base_url": company["base_url"],
+                    "params": {
+                        "appliedFacets": selected_facets,
+                        "limit": 20,
+                        "offset": 0,
+                        "searchText": search.replace(" ", "+"),
+                    },
+                }
+                replaced = upsert_company(new_entry)
+                st.success(f"{'Updated' if replaced else 'Added'} {company['name']} in your alert list")
+                st.rerun()
 
-        if st.button("Add to my alert list"):
-            new_entry = {
-                "name": company["name"],
-                "api_url": company["api_url"],
-                "base_url": company["base_url"],
-                "params": {
-                    "appliedFacets": selected_facets,
-                    "limit": 20,
-                    "offset": 0,
-                    "searchText": search.replace(" ", "+"),
-                },
-            }
+    elif platform == "Greenhouse":
+        st.caption(
+            "Greenhouse returns every posting in one call and filters by "
+            "plain text, not IDs - no 'fetch filters' step needed. Find the "
+            "slug in the company's careers URL: boards.greenhouse.io/**figma**."
+        )
+        gh_name = st.text_input("Display name", key="gh_name", placeholder="Figma")
+        gh_slug = st.text_input("Company slug", key="gh_slug", placeholder="figma")
+        gh_col1, gh_col2, gh_col3 = st.columns(3)
+        with gh_col1:
+            gh_department = st.text_input("Department contains", key="gh_department", placeholder="Engineering")
+        with gh_col2:
+            gh_office = st.text_input("Office contains", key="gh_office", placeholder="Remote")
+        with gh_col3:
+            gh_search = st.text_input("Title contains", key="gh_search", placeholder="Software Engineer")
 
-            existing = list(st.session_state["portal_config"])
-            replaced = False
-            for i, cfg in enumerate(existing):
-                if cfg["name"].lower() == new_entry["name"].lower():
-                    existing[i] = new_entry
-                    replaced = True
-                    break
-            if not replaced:
-                existing.append(new_entry)
-            set_portal_config(existing)
+        if st.button("Add to my alert list", key="gh_add"):
+            if not (gh_name and gh_slug):
+                st.error("Display name and company slug are required")
+            else:
+                new_entry = {
+                    "name": gh_name.strip(),
+                    "platform": "greenhouse",
+                    "company_slug": gh_slug.strip(),
+                    "filters": {
+                        "department": gh_department.strip(),
+                        "office": gh_office.strip(),
+                        "searchText": gh_search.strip(),
+                    },
+                }
+                replaced = upsert_company(new_entry)
+                st.success(f"{'Updated' if replaced else 'Added'} {new_entry['name']} in your alert list")
+                st.rerun()
 
-            st.success(f"{'Updated' if replaced else 'Added'} {company['name']} in your alert list")
+    elif platform == "Lever":
+        st.caption(
+            "Lever also returns every posting in one call, filtered by "
+            "plain text. Find the slug in the company's careers URL: "
+            "jobs.lever.co/**palantir**."
+        )
+        lv_name = st.text_input("Display name", key="lv_name", placeholder="Palantir")
+        lv_slug = st.text_input("Company slug", key="lv_slug", placeholder="palantir")
+        lv_col1, lv_col2, lv_col3 = st.columns(3)
+        with lv_col1:
+            lv_team = st.text_input("Team contains", key="lv_team", placeholder="Engineering")
+        with lv_col2:
+            lv_location = st.text_input("Location contains", key="lv_location", placeholder="Remote")
+        with lv_col3:
+            lv_search = st.text_input("Title contains", key="lv_search", placeholder="Software Engineer")
+
+        if st.button("Add to my alert list", key="lv_add"):
+            if not (lv_name and lv_slug):
+                st.error("Display name and company slug are required")
+            else:
+                new_entry = {
+                    "name": lv_name.strip(),
+                    "platform": "lever",
+                    "company_slug": lv_slug.strip(),
+                    "filters": {
+                        "team": lv_team.strip(),
+                        "location": lv_location.strip(),
+                        "searchText": lv_search.strip(),
+                    },
+                }
+                replaced = upsert_company(new_entry)
+                st.success(f"{'Updated' if replaced else 'Added'} {new_entry['name']} in your alert list")
+                st.rerun()
 
     st.divider()
     st.subheader("Your alert list")
@@ -417,8 +588,15 @@ with tab_build:
             if not isinstance(parsed, list):
                 raise ValueError("Top-level JSON must be a list of companies")
             for entry in parsed:
-                if not isinstance(entry, dict) or not entry.get("name") or not entry.get("api_url"):
-                    raise ValueError("Every entry needs at least a 'name' and 'api_url'")
+                if not isinstance(entry, dict) or not entry.get("name"):
+                    raise ValueError("Every entry needs at least a 'name'")
+                entry_platform = entry.get("platform", "workday")
+                if entry_platform == "workday" and not entry.get("api_url"):
+                    raise ValueError(f"'{entry['name']}' needs an 'api_url' (workday entries)")
+                if entry_platform in ("greenhouse", "lever") and not entry.get("company_slug"):
+                    raise ValueError(
+                        f"'{entry['name']}' needs a 'company_slug' ({entry_platform} entries)"
+                    )
         except (json.JSONDecodeError, ValueError) as exc:
             st.error(f"Invalid JSON, not applied: {exc}")
         else:
@@ -431,96 +609,167 @@ with tab_build:
 
 with tab_test:
     st.subheader("Test a company's API")
-    st.caption(
-        "Paste an API URL, base URL, and a params JSON (same shape as an "
-        "entry's 'params' field in Build List) to check whether Workday "
-        "actually returns jobs for them right now - handy for confirming a "
-        "fix to stale facet IDs works before adding/updating an entry, or "
-        "for sanity-checking a brand new company."
+    test_platform = st.selectbox(
+        "Platform", ["Workday", "Greenhouse", "Lever"], key="test_platform_select"
     )
 
-    test_api_url = st.text_input(
-        "API URL",
-        key="test_api_url",
-        placeholder="https://company.wd1.myworkdayjobs.com/wday/cxs/company/site/jobs",
-    )
-    test_base_url = st.text_input(
-        "Base URL (optional, only used to build the preview links below)",
-        key="test_base_url",
-        placeholder="https://company.wd1.myworkdayjobs.com/en-US/site/job",
-    )
-    test_params_text = st.text_area(
-        "Params (JSON)",
-        value=json.dumps(
-            {"appliedFacets": {}, "limit": 20, "offset": 0, "searchText": "software engineer"},
-            indent=4,
-        ),
-        height=180,
-        key="test_params_text",
-    )
+    if test_platform == "Workday":
+        st.caption(
+            "Paste an API URL, base URL, and a params JSON (same shape as "
+            "an entry's 'params' field in Build List) to check whether "
+            "Workday actually returns jobs for them right now - handy for "
+            "confirming a fix to stale facet IDs works before adding/"
+            "updating an entry, or for sanity-checking a brand new company."
+        )
 
-    if st.button("Test API"):
-        if not test_api_url:
-            st.error("Enter an API URL first")
-        else:
-            try:
-                test_params = json.loads(test_params_text)
-            except json.JSONDecodeError as exc:
-                st.error(f"Invalid params JSON: {exc}")
+        test_api_url = st.text_input(
+            "API URL",
+            key="test_api_url",
+            placeholder="https://company.wd1.myworkdayjobs.com/wday/cxs/company/site/jobs",
+        )
+        test_base_url = st.text_input(
+            "Base URL (optional, only used to build the preview links below)",
+            key="test_base_url",
+            placeholder="https://company.wd1.myworkdayjobs.com/en-US/site/job",
+        )
+        test_params_text = st.text_area(
+            "Params (JSON)",
+            value=json.dumps(
+                {"appliedFacets": {}, "limit": 20, "offset": 0, "searchText": "software engineer"},
+                indent=4,
+            ),
+            height=180,
+            key="test_params_text",
+        )
+
+        if st.button("Test API", key="test_workday"):
+            if not test_api_url:
+                st.error("Enter an API URL first")
             else:
                 try:
-                    resp = requests.post(
-                        test_api_url, json=test_params, headers=WORKDAY_HEADERS, timeout=30
-                    )
-                except requests.RequestException as exc:
-                    st.error(f"Couldn't reach {test_api_url}: {exc}")
+                    test_params = json.loads(test_params_text)
+                except json.JSONDecodeError as exc:
+                    st.error(f"Invalid params JSON: {exc}")
                 else:
-                    if resp.status_code == 400:
-                        st.error(
-                            "HTTP 400 - Workday rejected these params (usually means one "
-                            "or more facet IDs are stale or invalid)."
+                    try:
+                        resp = requests.post(
+                            test_api_url, json=test_params, headers=WORKDAY_HEADERS, timeout=30
                         )
-                    elif resp.status_code != 200:
-                        st.error(f"HTTP {resp.status_code} from that API URL.")
+                    except requests.RequestException as exc:
+                        st.error(f"Couldn't reach {test_api_url}: {exc}")
                     else:
-                        try:
-                            data = resp.json()
-                        except requests.exceptions.JSONDecodeError:
+                        if resp.status_code == 400:
                             st.error(
-                                "Got a 200 but the response wasn't JSON - possibly a "
-                                "bot-block page or a Workday outage page. Try again "
-                                "shortly."
+                                "HTTP 400 - Workday rejected these params (usually means "
+                                "one or more facet IDs are stale or invalid)."
                             )
+                        elif resp.status_code != 200:
+                            st.error(f"HTTP {resp.status_code} from that API URL.")
                         else:
-                            postings = data.get("jobPostings")
-                            if postings is None:
-                                st.warning(
-                                    "No 'jobPostings' field in the response - here's the "
-                                    "raw JSON so you can see what came back instead:"
-                                )
-                                st.json(data)
-                            elif not postings:
-                                st.warning(
-                                    "Request succeeded (so the params themselves are "
-                                    "valid), but 0 jobs matched right now."
+                            try:
+                                data = resp.json()
+                            except requests.exceptions.JSONDecodeError:
+                                st.error(
+                                    "Got a 200 but the response wasn't JSON - possibly a "
+                                    "bot-block page or a Workday outage page. Try again "
+                                    "shortly."
                                 )
                             else:
-                                st.success(f"{len(postings)} job(s) returned:")
-                                for job in postings:
-                                    title = job.get("title", "(no title)")
-                                    posted = job.get("postedOn", "")
-                                    link = job.get("externalPath") or job.get("jobPostingUrl") or ""
-                                    if test_base_url and link:
-                                        slug = (
-                                            link.split("/job/")[-1]
-                                            if "/job/" in link
-                                            else link.split("/")[-1]
-                                        )
-                                        st.markdown(
-                                            f"- **{title}** - {posted}  \n  {test_base_url}/{slug}"
-                                        )
-                                    else:
-                                        st.markdown(f"- **{title}** - {posted}")
+                                postings = data.get("jobPostings")
+                                if postings is None:
+                                    st.warning(
+                                        "No 'jobPostings' field in the response - here's "
+                                        "the raw JSON so you can see what came back instead:"
+                                    )
+                                    st.json(data)
+                                elif not postings:
+                                    st.warning(
+                                        "Request succeeded (so the params themselves are "
+                                        "valid), but 0 jobs matched right now."
+                                    )
+                                else:
+                                    st.success(f"{len(postings)} job(s) returned:")
+                                    for job in postings:
+                                        title = job.get("title", "(no title)")
+                                        posted = job.get("postedOn", "")
+                                        link = job.get("externalPath") or job.get("jobPostingUrl") or ""
+                                        if test_base_url and link:
+                                            slug = (
+                                                link.split("/job/")[-1]
+                                                if "/job/" in link
+                                                else link.split("/")[-1]
+                                            )
+                                            st.markdown(
+                                                f"- **{title}** - {posted}  \n  {test_base_url}/{slug}"
+                                            )
+                                        else:
+                                            st.markdown(f"- **{title}** - {posted}")
+
+    elif test_platform == "Greenhouse":
+        st.caption(
+            "Enter a company slug (from boards.greenhouse.io/**slug**) and "
+            "optional filters to see what Greenhouse actually returns."
+        )
+        gh_test_slug = st.text_input("Company slug", key="gh_test_slug", placeholder="figma")
+        gh_test_col1, gh_test_col2, gh_test_col3 = st.columns(3)
+        with gh_test_col1:
+            gh_test_department = st.text_input("Department contains", key="gh_test_department")
+        with gh_test_col2:
+            gh_test_office = st.text_input("Office contains", key="gh_test_office")
+        with gh_test_col3:
+            gh_test_search = st.text_input("Title contains", key="gh_test_search")
+
+        if st.button("Test API", key="test_greenhouse"):
+            if not gh_test_slug:
+                st.error("Enter a company slug first")
+            else:
+                jobs, error = fetch_greenhouse_jobs(
+                    gh_test_slug, gh_test_department, gh_test_office, gh_test_search
+                )
+                if error:
+                    st.error(error)
+                elif not jobs:
+                    st.warning(
+                        "Request succeeded but 0 jobs matched - double-check the slug "
+                        "and filters."
+                    )
+                else:
+                    st.success(f"{len(jobs)} job(s) returned:")
+                    for job in jobs:
+                        st.markdown(f"- **{job['title']}** - {job['updated_at']}  \n  {job['link']}")
+
+    elif test_platform == "Lever":
+        st.caption(
+            "Enter a company slug (from jobs.lever.co/**slug**) and "
+            "optional filters to see what Lever actually returns."
+        )
+        lv_test_slug = st.text_input("Company slug", key="lv_test_slug", placeholder="palantir")
+        lv_test_col1, lv_test_col2, lv_test_col3 = st.columns(3)
+        with lv_test_col1:
+            lv_test_team = st.text_input("Team contains", key="lv_test_team")
+        with lv_test_col2:
+            lv_test_location = st.text_input("Location contains", key="lv_test_location")
+        with lv_test_col3:
+            lv_test_search = st.text_input("Title contains", key="lv_test_search")
+
+        if st.button("Test API", key="test_lever"):
+            if not lv_test_slug:
+                st.error("Enter a company slug first")
+            else:
+                jobs, error = fetch_lever_jobs(
+                    lv_test_slug, lv_test_team, lv_test_location, lv_test_search
+                )
+                if error:
+                    st.error(error)
+                elif not jobs:
+                    st.warning(
+                        "Request succeeded but 0 jobs matched - double-check the slug "
+                        "and filters."
+                    )
+                else:
+                    st.success(f"{len(jobs)} job(s) returned:")
+                    for job in jobs:
+                        st.markdown(f"- **{job['title']}** - {job['updated_at']}  \n  {job['link']}")
 
 with tab_telegram:
     st.subheader("Telegram bot")
